@@ -1,0 +1,6 @@
+{
+  "name": "somsak-house",
+  "private": true,
+  "type": "module",
+  "description": "Somsak House — SPA จัดการร้าน/ที่พัก (เฟส 1, Local, IndexedDB)"
+}
