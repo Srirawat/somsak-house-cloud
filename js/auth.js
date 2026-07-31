@@ -22,9 +22,11 @@ export const MEMBER_DEFAULT_PERMS = {
 };
 
 const TH_ERRORS = [
-  [/invalid login credentials/i, 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'],
+  [/invalid login credentials/i, 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง'],
+  [/duplicate key|profiles_username_key/i, 'ชื่อผู้ใช้นี้ถูกใช้แล้ว'],
+  [/invalid.*email|email_address_invalid/i, 'ชื่อผู้ใช้นี้ใช้ไม่ได้ — ลองใช้ตัวอักษรภาษาอังกฤษหรือตัวเลข'],
   [/email not confirmed/i, 'ยังไม่ได้ยืนยันอีเมล — ตรวจกล่องจดหมายแล้วกดลิงก์ยืนยันก่อน'],
-  [/user already registered/i, 'อีเมลนี้ถูกใช้สมัครแล้ว'],
+  [/user already registered/i, 'ชื่อผู้ใช้หรืออีเมลนี้ถูกใช้สมัครแล้ว'],
   [/password should be at least/i, 'รหัสผ่านสั้นเกินไป (Supabase กำหนดอย่างน้อย 6 ตัวอักษร)'],
   [/rate limit/i, 'ส่งคำขอถี่เกินไป กรุณารอสักครู่'],
   [/failed to fetch|networkerror/i, 'เชื่อมต่อ Supabase ไม่ได้ — ตรวจอินเทอร์เน็ต/ค่า config.js'],
@@ -52,21 +54,43 @@ function toUser(p, email) {
   };
 }
 
-export async function register(email, username, password) {
-  email = String(email || '').trim();
+// ล็อกอินด้วย "ชื่อผู้ใช้" — เบื้องหลังยังใช้ Supabase Auth (อีเมล)
+// บัญชีที่ไม่ได้กรอกอีเมลจริง จะได้อีเมลภายในระบบ username@somsak.local
+export const INTERNAL_DOMAIN = 'somsak.local';
+
+function internalEmail(username) {
+  const slug = String(username).trim().toLowerCase().replace(/[^a-z0-9._-]/g, '') || 'user';
+  return `${slug}@${INTERNAL_DOMAIN}`;
+}
+
+// หาอีเมลของบัญชีจากชื่อผู้ใช้ (ผ่านฟังก์ชันในฐานข้อมูล — ไม่ต้องล็อกอินก่อน)
+async function emailOfUsername(username) {
+  const u = String(username || '').trim();
+  if (u.includes('@')) return u; // กรอกเป็นอีเมลมาเลยก็ได้
+  const { data, error } = await supabase.rpc('email_for_username', { uname: u });
+  if (error || !data) return internalEmail(u); // เผื่อยังไม่ได้อัปเดต schema
+  return data;
+}
+
+export async function register(username, password, email = '') {
   username = String(username || '').trim();
-  if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('รูปแบบอีเมลไม่ถูกต้อง');
+  email = String(email || '').trim();
   if (username.length < 3) throw new Error('ชื่อผู้ใช้ต้องยาวอย่างน้อย 3 ตัวอักษร');
+  if (/\s/.test(username)) throw new Error('ชื่อผู้ใช้ต้องไม่มีช่องว่าง');
   if (String(password || '').length < 6) throw new Error('รหัสผ่านต้องยาวอย่างน้อย 6 ตัวอักษร');
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) throw new Error('รูปแบบอีเมลไม่ถูกต้อง');
   const { data, error } = await supabase.auth.signUp({
-    email, password, options: { data: { username } },
+    email: email || internalEmail(username),
+    password,
+    options: { data: { username } },
   });
   if (error) throw new Error(thError(error.message));
   return data;
 }
 
-export async function login(email, password) {
-  const { data, error } = await supabase.auth.signInWithPassword({ email: String(email || '').trim(), password });
+export async function login(username, password) {
+  const email = await emailOfUsername(username);
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw new Error(thError(error.message));
   const p = await fetchProfile(data.user.id);
   if (!p) { await supabase.auth.signOut(); throw new Error('ไม่พบโปรไฟล์ผู้ใช้ — ติดต่อผู้ดูแลระบบ'); }

@@ -1,12 +1,14 @@
-// pages/pos.js — หน้าแรก POS: สแกน/ค้นหา, ยิงบาร์โค้ด Enter เพิ่มอัตโนมัติ, ตัดสต๊อกเมื่อชำระเงิน
+// pages/pos.js — หน้าแรก POS: สแกน/ค้นหา, ยิงบาร์โค้ด Enter เพิ่มอัตโนมัติ,
+// ชำระเงินสด (คำนวณเงินทอน) หรือ QR (ยืนยันเอง), ตัดสต๊อกเมื่อชำระเงิน
 import { dbAll, dbGet, dbPut, uuid } from '../db.js';
-import { fmtMoney, fmtInt, toast, esc, modal } from '../ui.js';
+import { fmtMoney, fmtInt, toast, esc, modal, compressImage } from '../ui.js';
 import { nextBillNo } from '../auth.js';
 import { scanBarcode } from '../barcode.js';
 
 export default async function render(root, { user }) {
   let products = await dbAll('products');
   let cart = []; // {productId, name, price, qty}
+  const canEditQR = user.role === 'tester' || user.role === 'admin';
 
   root.innerHTML = `
   <h2>หน้าแรก POS</h2>
@@ -38,6 +40,8 @@ export default async function render(root, { user }) {
   const grid = root.querySelector('#grid');
   const cartBody = root.querySelector('#cartBody');
   const totalEl = root.querySelector('#total');
+
+  const cartTotal = () => cart.reduce((s, i) => s + i.price * i.qty, 0);
 
   function renderGrid(filter = '') {
     const f = filter.trim().toLowerCase();
@@ -77,8 +81,7 @@ export default async function render(root, { user }) {
         <td class="num">${fmtMoney(i.price * i.qty)}</td>
         <td><button class="ghost rm" data-idx="${idx}">✕</button></td>
       </tr>`).join('');
-    const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
-    totalEl.textContent = fmtMoney(total) + ' ฿';
+    totalEl.textContent = fmtMoney(cartTotal()) + ' ฿';
     cartBody.querySelectorAll('.qty').forEach(inp => inp.addEventListener('change', () => {
       const idx = +inp.dataset.idx;
       const p = products.find(x => x.id === cart[idx].productId);
@@ -116,8 +119,7 @@ export default async function render(root, { user }) {
     if (!code) return;
     scan.value = code;
     renderGrid(code);
-    const known = products.some(x => (x.barcode || '') === code);
-    if (known) {
+    if (products.some(x => (x.barcode || '') === code)) {
       submitCode(code);
       toast('สแกนสำเร็จ: ' + code);
     } else {
@@ -127,17 +129,149 @@ export default async function render(root, { user }) {
 
   root.querySelector('#btnClear').onclick = () => { cart = []; renderCart(); };
 
+  // ---------------- ชำระเงิน ----------------
   root.querySelector('#btnPay').onclick = async () => {
     if (!cart.length) return toast('ตะกร้าว่าง', 'err');
-    // ตรวจสต๊อกล่าสุดก่อนตัด
+    for (const i of cart) {
+      const p = await dbGet('products', i.productId);
+      if (!p || p.stock < i.qty) return toast(`สต๊อก "${i.name}" ไม่พอ (เหลือ ${p ? p.stock : 0})`, 'err');
+    }
+    openPayModal(cartTotal());
+  };
+
+  async function openPayModal(total) {
+    const qrSetting = (await dbGet('settings', 'qrImage')) || {};
+    let qrImage = qrSetting.image || null;
+
+    const m = modal(`
+      <h3 style="margin-top:0">ชำระเงิน</h3>
+      <div class="pay-amount">ยอดที่ต้องชำระ <b>${fmtMoney(total)}</b> ฿</div>
+      <div class="tabs pay-tabs">
+        <button type="button" data-m="cash" class="active">💵 เงินสด</button>
+        <button type="button" data-m="qr">📱 QR พร้อมเพย์</button>
+      </div>
+      <div id="payPanel"></div>
+      <div class="actions"><button type="button" id="payCancel">ยกเลิก</button></div>`);
+
+    m.el.querySelector('#payCancel').onclick = m.close;
+    const panel = m.el.querySelector('#payPanel');
+
+    function showCash() {
+      panel.innerHTML = `
+        <label>รับเงินมา (บาท)</label>
+        <input id="recv" type="number" min="0" step="0.01" inputmode="decimal"
+               placeholder="เช่น 100" style="width:100%;font-size:20px;text-align:right" autofocus>
+        <div class="quick-cash" id="quick"></div>
+        <div class="change-box" id="changeBox">เงินทอน <b>0.00</b> ฿</div>
+        <div style="text-align:right;margin-top:10px">
+          <button class="primary" id="confirmCash" style="font-size:16px;padding:10px 24px" disabled>ยืนยันการชำระ</button>
+        </div>`;
+
+      const recv = panel.querySelector('#recv');
+      const box = panel.querySelector('#changeBox');
+      const btn = panel.querySelector('#confirmCash');
+
+      // ปุ่มลัด: ยอดพอดี + ปัดขึ้นแบงก์ที่ใช้บ่อย
+      const notes = [20, 50, 100, 500, 1000].filter(n => n >= total);
+      const quick = [{ v: total, label: 'พอดี ' + fmtInt(Math.ceil(total)) }]
+        .concat(notes.slice(0, 4).map(n => ({ v: n, label: fmtInt(n) })));
+      panel.querySelector('#quick').innerHTML = quick
+        .map(q => `<button type="button" data-v="${q.v}">${q.label}</button>`).join('');
+      panel.querySelectorAll('#quick button').forEach(b => b.onclick = () => {
+        recv.value = (+b.dataset.v).toFixed(2);
+        update();
+      });
+
+      function update() {
+        const got = parseFloat(recv.value);
+        if (!isFinite(got) || got <= 0) {
+          box.className = 'change-box';
+          box.innerHTML = 'เงินทอน <b>0.00</b> ฿';
+          btn.disabled = true;
+          return;
+        }
+        const change = got - total;
+        if (change < -0.005) {
+          box.className = 'change-box short';
+          box.innerHTML = `❌ เงินยังขาดอีก <b>${fmtMoney(-change)}</b> ฿`;
+          btn.disabled = true;
+        } else {
+          box.className = 'change-box ok';
+          box.innerHTML = `เงินทอน <b>${fmtMoney(change)}</b> ฿`;
+          btn.disabled = false;
+        }
+      }
+      recv.addEventListener('input', update);
+      recv.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !btn.disabled) { e.preventDefault(); btn.click(); }
+      });
+      btn.onclick = () => {
+        const got = parseFloat(recv.value);
+        finishSale(m, total, 'cash', got, got - total);
+      };
+      recv.focus();
+    }
+
+    function showQR() {
+      panel.innerHTML = `
+        <div class="qr-box">
+          ${qrImage
+            ? `<img src="${qrImage}" alt="QR พร้อมเพย์">`
+            : `<div class="qr-empty">ยังไม่ได้ตั้งรูป QR<br>
+                 <span class="muted">${canEditQR ? 'กดปุ่ม "เปลี่ยนรูป QR" ด้านล่างเพื่ออัปโหลด' : 'แจ้งผู้ดูแลระบบให้อัปโหลดรูป QR'}</span></div>`}
+        </div>
+        <div class="pay-amount" style="margin-top:8px">ให้ลูกค้าสแกนจ่าย <b>${fmtMoney(total)}</b> ฿</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:8px;flex-wrap:wrap">
+          <span>
+            ${canEditQR ? `<button type="button" id="btnQrEdit">🖼️ เปลี่ยนรูป QR</button>
+              ${qrImage ? '<button type="button" class="danger" id="btnQrDel">ลบรูป</button>' : ''}` : ''}
+          </span>
+          <button class="primary" id="confirmQr" style="font-size:16px;padding:10px 24px">✅ ยืนยันว่าชำระเงินแล้ว</button>
+        </div>
+        <input id="qrFile" type="file" accept="image/*" hidden>`;
+
+      panel.querySelector('#confirmQr').onclick = () => finishSale(m, total, 'qr', null, 0);
+
+      if (canEditQR) {
+        const file = panel.querySelector('#qrFile');
+        panel.querySelector('#btnQrEdit').onclick = () => file.click();
+        file.addEventListener('change', async e => {
+          const f = e.target.files[0];
+          if (!f) return;
+          try {
+            qrImage = await compressImage(f, 900, 0.85);
+            await dbPut('settings', { key: 'qrImage', image: qrImage, updatedAt: Date.now(), updatedBy: user.username });
+            toast('บันทึกรูป QR แล้ว — ใช้ได้ทุกเครื่อง');
+            showQR();
+          } catch (err) { toast(err.message, 'err'); }
+        });
+        const del = panel.querySelector('#btnQrDel');
+        if (del) del.onclick = async () => {
+          if (!confirm('ลบรูป QR ที่ตั้งไว้?')) return;
+          qrImage = null;
+          await dbPut('settings', { key: 'qrImage', image: null, updatedAt: Date.now(), updatedBy: user.username });
+          toast('ลบรูป QR แล้ว');
+          showQR();
+        };
+      }
+    }
+
+    m.el.querySelectorAll('.pay-tabs button').forEach(b => b.onclick = () => {
+      m.el.querySelectorAll('.pay-tabs button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      b.dataset.m === 'cash' ? showCash() : showQR();
+    });
+    showCash();
+  }
+
+  // บันทึกการขาย + ตัดสต๊อก
+  async function finishSale(payModal, total, payMethod, received, change) {
     for (const i of cart) {
       const p = await dbGet('products', i.productId);
       if (!p || p.stock < i.qty) return toast(`สต๊อก "${i.name}" ไม่พอ (เหลือ ${p ? p.stock : 0})`, 'err');
     }
     const billNo = await nextBillNo();
     const ts = Date.now();
-    const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
-    // ตัดสต๊อก + บันทึกความเคลื่อนไหว
     for (const i of cart) {
       const p = await dbGet('products', i.productId);
       p.stock -= i.qty;
@@ -150,17 +284,25 @@ export default async function render(root, { user }) {
     await dbPut('sales', {
       id: uuid(), billNo, ts, total,
       items: cart.map(i => ({ ...i })),
+      payMethod, received: received ?? null, change: change ?? 0,
       userId: user.id, username: user.username,
     });
-    const m = modal(`<h3>ชำระเงินสำเร็จ ✅</h3>
-      <p>เลขที่บิล: <b>${billNo}</b></p>
+
+    payModal.close();
+    const m = modal(`<h3 style="margin-top:0">ชำระเงินสำเร็จ ✅</h3>
+      <p>เลขที่บิล: <b>${billNo}</b> · วิธีชำระ: <b>${payMethod === 'cash' ? '💵 เงินสด' : '📱 QR พร้อมเพย์'}</b></p>
       <p class="big">${fmtMoney(total)} ฿</p>
+      ${payMethod === 'cash' ? `<div class="result-box">
+        <div class="line">รับเงินมา <b>${fmtMoney(received)}</b> ฿</div>
+        <div class="line" style="font-size:22px">💰 เงินทอน <b>${fmtMoney(change)}</b> ฿</div></div>` : ''}
       <div class="actions"><button class="primary" id="ok">ตกลง</button></div>`);
     m.el.querySelector('#ok').onclick = m.close;
+
     cart = [];
     products = await dbAll('products');
     renderCart(); renderGrid(scan.value);
-  };
+    scan.focus();
+  }
 
   renderGrid();
   renderCart();

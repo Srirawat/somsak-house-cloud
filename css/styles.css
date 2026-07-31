@@ -33,6 +33,8 @@ h3{margin:14px 0 8px;font-size:16px}
 .usermenu{position:relative}
 .usermenu>button{background:rgba(255,255,255,.15);border:none;color:#fff}
 .dropdown{position:absolute;right:0;top:110%;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.15);display:flex;flex-direction:column;min-width:210px;overflow:hidden;z-index:30}
+.dropdown[hidden]{display:none}
+[hidden]{display:none !important}
 .dropdown button{border:none;border-radius:0;text-align:left;padding:11px 14px;color:var(--text)}
 .dropdown button:hover{background:#f0f4f6}
 .layout{display:flex;min-height:calc(100vh - 48px)}
@@ -83,6 +85,21 @@ td.num,th.num{text-align:right}
 .modal h3{margin-top:0}
 .modal form{display:flex;flex-direction:column;gap:10px}
 .modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+/* payment */
+.pay-amount{text-align:center;font-size:17px;margin:6px 0 12px}
+.pay-amount b{font-size:26px;color:var(--brand)}
+.pay-tabs button{flex:1}
+.quick-cash{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.quick-cash button{flex:1;min-width:70px}
+.change-box{background:#f1f5f9;border-radius:10px;padding:14px;text-align:center;font-size:17px;margin-top:8px}
+.change-box b{font-size:26px}
+.change-box.ok{background:#dcfce7;color:#166534}
+.change-box.short{background:#fee2e2;color:#991b1b}
+.qr-box{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center}
+.qr-box img{max-width:100%;max-height:340px;border-radius:8px}
+.qr-empty{padding:44px 12px;color:var(--muted);border:2px dashed var(--line);border-radius:10px}
+.edit-items input{padding:5px 8px}
+.edit-items th,.edit-items td{padding:5px 6px}
 /* barcode scanner */
 .scan-modal{max-width:440px}
 .scan-view{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:4/3}

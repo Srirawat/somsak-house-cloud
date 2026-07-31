@@ -86,7 +86,7 @@ function renderLogin() {
     <h1>🏠 Somsak House</h1>
     <p>ระบบจัดการร้าน/ที่พัก (Cloud — Supabase)</p>
     <form id="loginForm">
-      <div><label>อีเมล</label><input id="lu" type="email" required autocomplete="email"></div>
+      <div><label>ชื่อผู้ใช้</label><input id="lu" required autocomplete="username" autocapitalize="none" spellcheck="false"></div>
       <div><label>รหัสผ่าน</label><input id="lp" type="password" required autocomplete="current-password"></div>
       <button class="primary" type="submit">เข้าสู่ระบบ</button>
       <button type="button" id="btnReg">สมัครสมาชิก</button>
@@ -104,8 +104,7 @@ function renderLogin() {
   });
 
   document.getElementById('btnForgot').addEventListener('click', async () => {
-    const email = prompt('กรอกอีเมลที่ใช้สมัคร ระบบจะส่งลิงก์รีเซ็ตรหัสผ่านให้:',
-      document.getElementById('lu').value || '');
+    const email = prompt('กรอกอีเมลที่ผูกไว้กับบัญชี ระบบจะส่งลิงก์รีเซ็ตรหัสผ่านให้\n(ถ้าสมัครโดยไม่ได้ใส่อีเมล ให้แจ้งผู้ดูแลระบบแทน):', '');
     if (!email) return;
     try { await resetPassword(email); toast('ส่งลิงก์รีเซ็ตรหัสผ่านไปที่อีเมลแล้ว'); }
     catch (err) { toast(err.message, 'err'); }
@@ -115,10 +114,11 @@ function renderLogin() {
     const m = modal(`
       <h3>สมัครสมาชิก (บทบาท member)</h3>
       <form id="regForm">
-        <div><label>อีเมล</label><input id="re" type="email" required></div>
-        <div><label>ชื่อผู้ใช้ (ชื่อที่แสดงในระบบ)</label><input id="ru" required minlength="3"></div>
+        <div><label>ชื่อผู้ใช้ (ใช้ล็อกอิน — ภาษาอังกฤษ/ตัวเลข ไม่มีช่องว่าง)</label>
+          <input id="ru" required minlength="3" autocapitalize="none" spellcheck="false"></div>
         <div><label>รหัสผ่าน (อย่างน้อย 6 ตัวอักษร)</label><input id="rp" type="password" required minlength="6"></div>
         <div><label>ยืนยันรหัสผ่าน</label><input id="rp2" type="password" required></div>
+        <div><label>อีเมล (ไม่บังคับ — ใส่ไว้เผื่อลืมรหัสผ่าน)</label><input id="re" type="email"></div>
         <div class="actions"><button type="button" id="regCancel">ยกเลิก</button>
         <button class="primary" type="submit">สมัคร</button></div>
       </form>`);
@@ -128,9 +128,9 @@ function renderLogin() {
       const p1 = m.el.querySelector('#rp').value, p2 = m.el.querySelector('#rp2').value;
       if (p1 !== p2) return toast('รหัสผ่านไม่ตรงกัน', 'err');
       try {
-        await register(m.el.querySelector('#re').value, m.el.querySelector('#ru').value, p1);
+        await register(m.el.querySelector('#ru').value, p1, m.el.querySelector('#re').value);
         m.close();
-        toast('สมัครสำเร็จ — ถ้าระบบเปิดยืนยันอีเมล ให้กดลิงก์ในอีเมลก่อนแล้วค่อยเข้าสู่ระบบ');
+        toast('สมัครสำเร็จ — เข้าสู่ระบบด้วยชื่อผู้ใช้และรหัสผ่านได้เลย');
       } catch (err) { toast(err.message, 'err'); }
     });
   });
