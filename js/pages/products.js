@@ -1,6 +1,7 @@
 // pages/products.js — เพิ่ม/แก้/ลบ, รูปสินค้า, ค้นหา+กรองหมวด, แจ้งเตือนสต็อกต่ำ
 import { dbAll, dbPut, dbDel, uuid } from '../db.js';
 import { fmtMoney, fmtInt, toast, esc, modal, compressImage } from '../ui.js';
+import { scanBarcode } from '../barcode.js';
 
 export default async function render(root, { user }) {
   let products = await dbAll('products');
@@ -78,7 +79,11 @@ export default async function render(root, { user }) {
       <form id="f">
         <div><label>ชื่อสินค้า *</label><input id="fname" required value="${esc(p.name)}"></div>
         <div class="row">
-          <div><label>บาร์โค้ด</label><input id="fbar" value="${esc(p.barcode || '')}"></div>
+          <div><label>บาร์โค้ด</label>
+            <span style="display:flex;gap:6px">
+              <input id="fbar" value="${esc(p.barcode || '')}" style="flex:1;min-width:0">
+              <button type="button" id="fbarCam" title="สแกนด้วยกล้อง">📷</button>
+            </span></div>
           <div><label>หมวดหมู่</label><input id="fcat" value="${esc(p.category || '')}" list="catList">
             <datalist id="catList">${[...new Set(products.map(x => x.category).filter(Boolean))].map(c => `<option>${esc(c)}</option>`).join('')}</datalist></div>
         </div>
@@ -98,6 +103,15 @@ export default async function render(root, { user }) {
         </div>
       </form>`);
     let image = p.image;
+    // 📷 สแกนบาร์โค้ดใส่ช่องอัตโนมัติ + เตือนถ้าซ้ำกับสินค้าอื่น
+    m.el.querySelector('#fbarCam').onclick = async () => {
+      const code = await scanBarcode();
+      if (!code) return;
+      const dup = products.find(x => x.barcode === code && x.id !== p.id);
+      m.el.querySelector('#fbar').value = code;
+      if (dup) toast(`⚠️ บาร์โค้ดนี้ซ้ำกับสินค้า "${dup.name}"`, 'err');
+      else toast('สแกนสำเร็จ: ' + code);
+    };
     m.el.querySelector('#fimg').addEventListener('change', async e => {
       const f = e.target.files[0];
       if (!f) return;

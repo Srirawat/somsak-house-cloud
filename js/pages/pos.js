@@ -2,6 +2,7 @@
 import { dbAll, dbGet, dbPut, uuid } from '../db.js';
 import { fmtMoney, fmtInt, toast, esc, modal } from '../ui.js';
 import { nextBillNo } from '../auth.js';
+import { scanBarcode } from '../barcode.js';
 
 export default async function render(root, { user }) {
   let products = await dbAll('products');
@@ -14,6 +15,7 @@ export default async function render(root, { user }) {
       <div class="row" style="margin-bottom:10px">
         <div style="flex:1"><label>สแกนบาร์โค้ด / ค้นหาสินค้า (Enter เพื่อเพิ่ม)</label>
           <input id="scan" placeholder="ยิงบาร์โค้ดแล้วกด Enter หรือพิมพ์ชื่อสินค้า" style="width:100%" autofocus></div>
+        <div><button class="primary" id="btnCam" title="เปิดกล้องสแกนบาร์โค้ด">📷 สแกนด้วยกล้อง</button></div>
       </div>
       <div class="prod-list" id="grid"></div>
     </div>
@@ -90,18 +92,38 @@ export default async function render(root, { user }) {
     }));
   }
 
-  scan.addEventListener('input', () => renderGrid(scan.value));
-  scan.addEventListener('keydown', e => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    const q = scan.value.trim().toLowerCase();
+  // ค้นหาสินค้าจากข้อความ/บาร์โค้ด แล้วเพิ่มลงตะกร้า
+  function submitCode(raw) {
+    const q = String(raw || '').trim().toLowerCase();
     if (!q) return;
     const p = products.find(x => (x.barcode || '').toLowerCase() === q)
       || products.find(x => x.name.toLowerCase() === q)
       || products.filter(x => x.name.toLowerCase().includes(q))[0];
     if (p) { addToCart(p); scan.value = ''; renderGrid(); }
-    else toast('ไม่พบสินค้า: ' + scan.value, 'err');
+    else toast('ไม่พบสินค้า: ' + raw, 'err');
+  }
+
+  scan.addEventListener('input', () => renderGrid(scan.value));
+  scan.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    submitCode(scan.value);
   });
+
+  // 📷 เปิดกล้องสแกนบาร์โค้ด → เลขขึ้นในช่อง แล้วเพิ่มลงตะกร้าอัตโนมัติ
+  root.querySelector('#btnCam').onclick = async () => {
+    const code = await scanBarcode();
+    if (!code) return;
+    scan.value = code;
+    renderGrid(code);
+    const known = products.some(x => (x.barcode || '') === code);
+    if (known) {
+      submitCode(code);
+      toast('สแกนสำเร็จ: ' + code);
+    } else {
+      toast(`สแกนได้ ${code} — ยังไม่มีสินค้านี้ในระบบ (เพิ่มที่เมนู "รายละเอียดสินค้า")`, 'err');
+    }
+  };
 
   root.querySelector('#btnClear').onclick = () => { cart = []; renderCart(); };
 

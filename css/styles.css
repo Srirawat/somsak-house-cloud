@@ -83,6 +83,16 @@ td.num,th.num{text-align:right}
 .modal h3{margin-top:0}
 .modal form{display:flex;flex-direction:column;gap:10px}
 .modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+/* barcode scanner */
+.scan-modal{max-width:440px}
+.scan-view{position:relative;background:#000;border-radius:10px;overflow:hidden;aspect-ratio:4/3}
+.scan-view video{width:100%;height:100%;object-fit:cover;display:block}
+.scan-frame{position:absolute;left:8%;right:8%;top:28%;bottom:28%;border:2px solid #22d3ee;border-radius:8px;
+  box-shadow:0 0 0 9999px rgba(0,0,0,.35);pointer-events:none}
+.scan-frame::after{content:"";position:absolute;left:0;right:0;top:50%;height:2px;background:#f43f5e;
+  animation:scanline 1.6s ease-in-out infinite}
+@keyframes scanline{0%,100%{top:6%}50%{top:94%}}
+.scan-status{margin-top:10px;font-size:13px;color:var(--muted);text-align:center;min-height:20px}
 /* toast */
 #toasts{position:fixed;bottom:18px;right:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
 .toast{padding:11px 18px;border-radius:10px;color:#fff;box-shadow:0 6px 18px rgba(0,0,0,.2);font-size:14px;animation:fadein .2s}
