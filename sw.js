@@ -1,7 +1,7 @@
 // sw.js — service worker: cache เฉพาะไฟล์หน้าเว็บ (app shell) ให้เปิดเร็ว/ติดตั้งเป็นแอปได้
 // ข้อมูลจาก Google Apps Script ไม่ cache ที่นี่ (api.js เก็บ cache ของตัวเองใน localStorage)
 // แก้ไฟล์หน้าเว็บแล้วให้เปลี่ยนเลข VERSION เพื่อบังคับโหลดใหม่
-const VERSION = 'pos-v1';
+const VERSION = 'pos-v2';
 const SHELL = [
   './', 'index.html', 'css/styles.css', 'icon.svg', 'manifest.webmanifest',
   'js/app.js', 'js/api.js', 'js/demo.js', 'js/config.js', 'js/ui.js', 'js/barcode.js', 'js/product-form.js',
