@@ -1,158 +1,130 @@
-// pages/products.js — เพิ่ม/แก้/ลบ, รูปสินค้า, ค้นหา+กรองหมวด, แจ้งเตือนสต็อกต่ำ
-import { dbAll, dbPut, dbDel, uuid } from '../db.js';
-import { fmtMoney, fmtInt, toast, esc, modal, compressImage } from '../ui.js';
+// pages/products.js — รายการสินค้า + สแกนเพิ่มสินค้าแบบต่อเนื่อง + รับเข้าสต๊อก
+import { store, call, onChange, findByBarcode } from '../api.js';
+import { fmtMoney, fmtInt, toast, esc, modal, busy } from '../ui.js';
 import { scanBarcode } from '../barcode.js';
+import { openProductForm, openStockForm } from '../product-form.js';
 
-export default async function render(root, { user }) {
-  let products = await dbAll('products');
-
+export default function render(root) {
   root.innerHTML = `
-  <h2>รายละเอียดสินค้า</h2>
+  <div class="page-head"><h2>📦 สินค้า</h2><span class="muted" id="count"></span></div>
+  <button class="primary big-scan" id="btnScan">📷 สแกนเพิ่มสินค้า</button>
   <div class="card">
     <div class="row">
-      <div style="flex:1"><label>ค้นหา (ชื่อ/บาร์โค้ด)</label><input id="q" style="width:100%"></div>
-      <div><label>หมวดหมู่</label><select id="cat"><option value="">ทั้งหมด</option></select></div>
-      <div><button class="primary" id="btnAdd">+ เพิ่มสินค้า</button></div>
+      <div style="flex:3 1 200px"><div class="search"><input id="q" placeholder="ค้นหาชื่อ / บาร์โค้ด"></div></div>
+      <div><select id="cat"><option value="">ทุกหมวด</option></select></div>
+      <div class="shrink"><button id="btnAdd">+ เพิ่มเอง</button></div>
     </div>
     <div id="lowWarn"></div>
   </div>
-  <div class="card">
-    <table><thead><tr>
-      <th>รูป</th><th>ชื่อสินค้า</th><th>บาร์โค้ด</th><th>หมวด</th>
-      <th class="num">ราคาขาย</th><th class="num">คงเหลือ</th><th class="num">จุดสั่งซื้อ</th><th></th>
-    </tr></thead><tbody id="body"></tbody></table>
-  </div>`;
+  <div class="card"><div class="list" id="list"></div></div>`;
 
-  const q = root.querySelector('#q');
-  const cat = root.querySelector('#cat');
-  const body = root.querySelector('#body');
+  const $ = id => root.querySelector('#' + id);
 
   function refreshCats() {
-    const cats = [...new Set(products.map(p => p.category).filter(Boolean))].sort();
-    const cur = cat.value;
-    cat.innerHTML = '<option value="">ทั้งหมด</option>' + cats.map(c => `<option>${esc(c)}</option>`).join('');
-    cat.value = cur;
+    const cats = [...new Set(store.products.map(p => p.category).filter(Boolean))].sort();
+    const cur = $('cat').value;
+    $('cat').innerHTML = '<option value="">ทุกหมวด</option>' + cats.map(c => `<option>${esc(c)}</option>`).join('');
+    $('cat').value = cats.includes(cur) ? cur : '';
   }
 
   function renderList() {
-    const f = q.value.trim().toLowerCase();
-    const list = products
+    const f = $('q').value.trim().toLowerCase();
+    const cat = $('cat').value;
+    const list = store.products
       .filter(p => !f || p.name.toLowerCase().includes(f) || (p.barcode || '').toLowerCase().includes(f))
-      .filter(p => !cat.value || p.category === cat.value)
+      .filter(p => !cat || p.category === cat)
       .sort((a, b) => a.name.localeCompare(b.name, 'th'));
 
-    body.innerHTML = list.length ? list.map(p => {
-      const low = (p.stock || 0) <= (p.minStock ?? 0);
-      return `<tr class="${low ? 'low-stock' : ''}">
-        <td>${p.image ? `<img class="thumb" src="${p.image}">` : '—'}</td>
-        <td>${esc(p.name)} ${low ? '<span class="badge warn">สต็อกต่ำ</span>' : ''}</td>
-        <td>${esc(p.barcode || '—')}</td>
-        <td>${esc(p.category || '—')}</td>
-        <td class="num">${fmtMoney(p.price)}</td>
-        <td class="num">${fmtInt(p.stock)}</td>
-        <td class="num">${fmtInt(p.minStock ?? 0)}</td>
-        <td><button class="edit" data-id="${p.id}">แก้ไข</button>
-            <button class="danger del" data-id="${p.id}">ลบ</button></td>
-      </tr>`;
-    }).join('') : '<tr><td colspan="8" class="muted">ยังไม่มีสินค้า</td></tr>';
+    $('count').textContent = `${fmtInt(store.products.length)} รายการ`;
+    $('list').innerHTML = list.length ? list.map(p => {
+      const low = p.stock <= (p.minStock ?? 0);
+      return `<div class="item clickable ${low ? 'low' : ''}" data-id="${p.id}">
+        ${p.image ? `<img class="thumb" src="${esc(p.image)}" loading="lazy" alt="">` : '<div class="thumb ph">📦</div>'}
+        <div class="main">
+          <div class="title">${esc(p.name)} ${low ? '<span class="badge warn">ใกล้หมด</span>' : ''}</div>
+          <div class="sub">${esc([p.barcode, p.category, p.detail].filter(Boolean).join(' · ') || '—')}</div>
+        </div>
+        <div class="right">
+          <div class="amt">${fmtMoney(p.price)} ฿</div>
+          <div class="muted">เหลือ ${fmtInt(p.stock)}</div>
+        </div>
+        <div class="acts"><button class="sm stock" data-id="${p.id}" title="รับเข้า/ปรับสต๊อก">📥</button></div>
+      </div>`;
+    }).join('') : `<div class="empty">${store.products.length ? 'ไม่พบสินค้า' : 'ยังไม่มีสินค้า — กด "📷 สแกนเพิ่มสินค้า" ด้านบน'}</div>`;
 
-    const lows = products.filter(p => (p.stock || 0) <= (p.minStock ?? 0));
-    root.querySelector('#lowWarn').innerHTML = lows.length
-      ? `<div class="warn-box">⚠️ สินค้าสต็อกต่ำ ${lows.length} รายการ: ${lows.map(p => esc(p.name)).join(', ')}</div>` : '';
+    const lows = store.products.filter(p => p.stock <= (p.minStock ?? 0));
+    $('lowWarn').innerHTML = lows.length
+      ? `<div class="warn-box">⚠️ ใกล้หมด ${lows.length} รายการ: ${lows.slice(0, 8).map(p => esc(p.name)).join(', ')}${lows.length > 8 ? ' …' : ''}</div>` : '';
 
-    body.querySelectorAll('.edit').forEach(b => b.onclick = () => openForm(products.find(p => p.id === b.dataset.id)));
-    body.querySelectorAll('.del').forEach(b => b.onclick = async () => {
-      const p = products.find(x => x.id === b.dataset.id);
-      if (!confirm(`ลบสินค้า "${p.name}" ?`)) return;
-      await dbDel('products', p.id);
-      products = await dbAll('products');
-      refreshCats(); renderList();
-      toast('ลบสินค้าแล้ว');
+    $('list').querySelectorAll('.item').forEach(el => el.onclick = e => {
+      const p = store.products.find(x => x.id === el.dataset.id);
+      if (e.target.closest('.stock')) openStockForm(p);
+      else openDetail(p);
     });
   }
 
-  function openForm(p = null) {
-    const isNew = !p;
-    p = p || { id: uuid(), name: '', barcode: '', category: '', price: 0, cost: 0, stock: 0, minStock: 3, image: null };
+  function openDetail(p) {
     const m = modal(`
-      <h3>${isNew ? 'เพิ่มสินค้า' : 'แก้ไขสินค้า'}</h3>
-      <form id="f">
-        <div><label>ชื่อสินค้า *</label><input id="fname" required value="${esc(p.name)}"></div>
-        <div class="row">
-          <div><label>บาร์โค้ด</label>
-            <span style="display:flex;gap:6px">
-              <input id="fbar" value="${esc(p.barcode || '')}" style="flex:1;min-width:0">
-              <button type="button" id="fbarCam" title="สแกนด้วยกล้อง">📷</button>
-            </span></div>
-          <div><label>หมวดหมู่</label><input id="fcat" value="${esc(p.category || '')}" list="catList">
-            <datalist id="catList">${[...new Set(products.map(x => x.category).filter(Boolean))].map(c => `<option>${esc(c)}</option>`).join('')}</datalist></div>
+      <div style="display:flex;gap:14px;align-items:flex-start">
+        ${p.image ? `<img class="thumb" src="${esc(p.image)}" style="width:96px;height:96px">` : '<div class="thumb ph" style="width:96px;height:96px">📦</div>'}
+        <div style="flex:1;min-width:0">
+          <h3 style="margin:0 0 4px">${esc(p.name)}</h3>
+          <div class="big">${fmtMoney(p.price)} ฿</div>
+          <div class="muted">คงเหลือ ${fmtInt(p.stock)} · ต้นทุน ${fmtMoney(p.cost)} ฿</div>
         </div>
-        <div class="row">
-          <div><label>ราคาขาย (บาท) *</label><input id="fprice" type="number" min="0" step="0.01" required value="${p.price}"></div>
-          <div><label>ต้นทุน (บาท)</label><input id="fcost" type="number" min="0" step="0.01" value="${p.cost || 0}"></div>
-        </div>
-        <div class="row">
-          <div><label>จำนวนคงเหลือ</label><input id="fstock" type="number" min="0" step="1" value="${p.stock || 0}"></div>
-          <div><label>จุดสั่งซื้อ (แจ้งเตือนสต็อกต่ำ)</label><input id="fmin" type="number" min="0" step="1" value="${p.minStock ?? 3}"></div>
-        </div>
-        <div><label>รูปสินค้า (บีบอัดอัตโนมัติ)</label><input id="fimg" type="file" accept="image/*">
-          <div id="preview">${p.image ? `<img class="thumb" src="${p.image}" style="width:80px;height:80px">` : ''}</div></div>
-        <div class="actions">
-          <button type="button" id="cancel">ยกเลิก</button>
-          <button class="primary" type="submit">บันทึก</button>
-        </div>
-      </form>`);
-    let image = p.image;
-    // 📷 สแกนบาร์โค้ดใส่ช่องอัตโนมัติ + เตือนถ้าซ้ำกับสินค้าอื่น
-    m.el.querySelector('#fbarCam').onclick = async () => {
-      const code = await scanBarcode();
-      if (!code) return;
-      const dup = products.find(x => x.barcode === code && x.id !== p.id);
-      m.el.querySelector('#fbar').value = code;
-      if (dup) toast(`⚠️ บาร์โค้ดนี้ซ้ำกับสินค้า "${dup.name}"`, 'err');
-      else toast('สแกนสำเร็จ: ' + code);
+      </div>
+      <table style="margin-top:12px">
+        <tr><th>บาร์โค้ด</th><td style="word-break:break-all">${esc(p.barcode || '—')}</td></tr>
+        <tr><th>หมวด</th><td>${esc(p.category || '—')}</td></tr>
+        <tr><th>รายละเอียด</th><td style="white-space:pre-wrap">${esc(p.detail || '—')}</td></tr>
+        <tr><th>แจ้งเตือนเมื่อเหลือ</th><td>${fmtInt(p.minStock)}</td></tr>
+      </table>
+      <div class="actions">
+        <button class="danger" id="del">ลบ</button>
+        <button id="stk">📥 รับเข้า/ปรับสต๊อก</button>
+        <button class="primary" id="edit">✏️ แก้ไข</button>
+      </div>`);
+    m.el.querySelector('#edit').onclick = () => { m.close(); openProductForm(p); };
+    m.el.querySelector('#stk').onclick = () => { m.close(); openStockForm(p); };
+    m.el.querySelector('#del').onclick = async () => {
+      if (!confirm(`ลบสินค้า "${p.name}" ?\n(บิลขายเก่ายังอยู่ครบ)`)) return;
+      const r = await busy(() => call('deleteProduct', { id: p.id }), 'กำลังลบ…');
+      if (r) { m.close(); toast('ลบสินค้าแล้ว'); }
     };
-    m.el.querySelector('#fimg').addEventListener('change', async e => {
-      const f = e.target.files[0];
-      if (!f) return;
-      try {
-        image = await compressImage(f, 600, 0.72);
-        m.el.querySelector('#preview').innerHTML = `<img class="thumb" src="${image}" style="width:80px;height:80px">`;
-      } catch (err) { toast(err.message, 'err'); }
-    });
-    m.el.querySelector('#cancel').onclick = m.close;
-    m.el.querySelector('#f').addEventListener('submit', async e => {
-      e.preventDefault();
-      const oldStock = isNew ? 0 : (p.stock || 0);
-      const rec = {
-        ...p,
-        name: m.el.querySelector('#fname').value.trim(),
-        barcode: m.el.querySelector('#fbar').value.trim(),
-        category: m.el.querySelector('#fcat').value.trim(),
-        price: +m.el.querySelector('#fprice').value || 0,
-        cost: +m.el.querySelector('#fcost').value || 0,
-        stock: Math.max(0, Math.floor(+m.el.querySelector('#fstock').value || 0)),
-        minStock: Math.max(0, Math.floor(+m.el.querySelector('#fmin').value || 0)),
-        image,
-        updatedAt: Date.now(),
-      };
-      if (!rec.name) return toast('กรุณากรอกชื่อสินค้า', 'err');
-      await dbPut('products', rec);
-      if (rec.stock !== oldStock) {
-        await dbPut('stock_moves', {
-          id: uuid(), productId: rec.id, ts: Date.now(), type: isNew ? 'in' : 'adjust',
-          qty: rec.stock - oldStock, note: isNew ? 'ตั้งต้นสินค้าใหม่' : 'แก้ไขจากหน้าสินค้า', userId: user.id,
-        });
+  }
+
+  // สแกนต่อเนื่อง: สแกน → (มีแล้ว = รับเข้าสต๊อก | ใหม่ = กรอกชื่อ/ราคา/รายละเอียด) → สแกนชิ้นต่อไป
+  async function scanLoop() {
+    for (;;) {
+      const code = await scanBarcode('📷 สแกนสินค้าที่จะเพิ่ม');
+      if (!code) return;
+      const exist = findByBarcode(code);
+      let saved;
+      if (exist) {
+        toast(`มีสินค้านี้แล้ว: ${exist.name}`, 'info');
+        saved = await openStockForm(exist);
+      } else {
+        saved = await openProductForm(null, { barcode: code });
       }
-      m.close();
-      products = await dbAll('products');
-      refreshCats(); renderList();
-      toast(isNew ? 'เพิ่มสินค้าแล้ว' : 'บันทึกการแก้ไขแล้ว');
+      if (!saved || !(await askNext())) return;
+    }
+  }
+
+  function askNext() {
+    return new Promise(resolve => {
+      const m = modal(`<h3>บันทึกแล้ว ✅</h3><p>สแกนสินค้าชิ้นต่อไปเลยไหม?</p>
+        <div class="actions"><button id="no">พอแล้ว</button><button class="primary" id="yes">📷 สแกนต่อ</button></div>`);
+      m.el.querySelector('#no').onclick = () => { m.close(); resolve(false); };
+      m.el.querySelector('#yes').onclick = () => { m.close(); resolve(true); };
     });
   }
 
-  root.querySelector('#btnAdd').onclick = () => openForm();
-  q.addEventListener('input', renderList);
-  cat.addEventListener('change', renderList);
+  $('btnScan').onclick = scanLoop;
+  $('btnAdd').onclick = () => openProductForm();
+  $('q').addEventListener('input', renderList);
+  $('cat').addEventListener('change', renderList);
+
+  const off = onChange(() => { refreshCats(); renderList(); });
   refreshCats(); renderList();
+  return off;
 }

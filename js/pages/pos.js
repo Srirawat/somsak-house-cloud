@@ -1,148 +1,198 @@
-// pages/pos.js — หน้าแรก POS: สแกน/ค้นหา, ยิงบาร์โค้ด Enter เพิ่มอัตโนมัติ,
-// ชำระเงินสด (คำนวณเงินทอน) หรือ QR (ยืนยันเอง), ตัดสต๊อกเมื่อชำระเงิน
-import { dbAll, dbGet, dbPut, uuid } from '../db.js';
-import { fmtMoney, fmtInt, toast, esc, modal, compressImage } from '../ui.js';
-import { nextBillNo } from '../auth.js';
+// pages/pos.js — หน้าขาย: สแกน/ค้นหา/แตะสินค้า → ตะกร้า → ชำระเงินสด/QR
+// สแกนเจอบาร์โค้ดที่ยังไม่มีในระบบ → เพิ่มสินค้าใหม่ได้ทันทีแล้วใส่ตะกร้าต่อเลย
+import { store, call, onChange, uploadImage, findByBarcode } from '../api.js';
+import { fmtMoney, fmtInt, toast, esc, modal, compressImage, busy } from '../ui.js';
 import { scanBarcode } from '../barcode.js';
+import { openProductForm } from '../product-form.js';
 
-export default async function render(root, { user }) {
-  let products = await dbAll('products');
-  let cart = []; // {productId, name, price, qty}
-  const canEditQR = user.role === 'tester' || user.role === 'admin';
+// เก็บตะกร้าไว้นอก render → สลับไปหน้าอื่นแล้วกลับมา ตะกร้ายังอยู่
+let cart = []; // {productId, name, price, qty}
+let category = '';
 
+export default function render(root) {
   root.innerHTML = `
-  <h2>หน้าแรก POS</h2>
   <div class="pos-grid">
-    <div class="card">
-      <div class="row" style="margin-bottom:10px">
-        <div style="flex:1"><label>สแกนบาร์โค้ด / ค้นหาสินค้า (Enter เพื่อเพิ่ม)</label>
-          <input id="scan" placeholder="ยิงบาร์โค้ดแล้วกด Enter หรือพิมพ์ชื่อสินค้า" style="width:100%" autofocus></div>
-        <div><button class="primary" id="btnCam" title="เปิดกล้องสแกนบาร์โค้ด">📷 สแกนด้วยกล้อง</button></div>
+    <div>
+      <div class="scan-row">
+        <div class="search"><input id="scan" placeholder="ค้นหา / ยิงบาร์โค้ด แล้วกด Enter" enterkeyhint="search" autocomplete="off"></div>
+        <button class="primary cam" id="btnCam" title="สแกนด้วยกล้อง">📷</button>
       </div>
+      <div class="chips" id="chips"></div>
       <div class="prod-list" id="grid"></div>
     </div>
-    <div class="card">
-      <h3 style="margin-top:0">ตะกร้าสินค้า</h3>
-      <table><thead><tr>
-        <th>สินค้า</th><th class="num">ราคา</th><th class="num">จำนวน</th>
-        <th class="num">ส่วนลด</th><th class="num">รวม</th><th></th>
-      </tr></thead><tbody id="cartBody"></tbody></table>
-      <div class="pos-total" id="total">0.00 ฿</div>
-      <div style="text-align:right;margin-top:10px">
-        <button id="btnClear">ล้างตะกร้า</button>
-        <button class="primary" id="btnPay" style="font-size:16px;padding:10px 26px">ชำระเงิน</button>
+    <div class="card cart-panel" id="cartPanel">
+      <div class="sheet-head"><b style="font-size:17px">🛒 ตะกร้าสินค้า</b><button class="ghost sm" id="closeSheet">✕ ปิด</button></div>
+      <h3 class="cart-title" style="margin-top:0">🛒 ตะกร้าสินค้า</h3>
+      <div class="cart-items" id="cartItems"></div>
+      <div class="pos-total"><span>ยอดรวม</span><b id="total">0.00</b></div>
+      <div class="cart-actions">
+        <button id="btnClear">ล้าง</button>
+        <button class="primary" id="btnPay">💰 ชำระเงิน</button>
       </div>
-      <div class="muted" style="margin-top:6px">* ช่องส่วนลดปิดใช้งานไว้ตามสเปค</div>
     </div>
-  </div>`;
+  </div>
+  <button class="cart-bar empty" id="cartBar"></button>
+  <div class="sheet-back" id="sheetBack" hidden></div>`;
 
-  const scan = root.querySelector('#scan');
-  const grid = root.querySelector('#grid');
-  const cartBody = root.querySelector('#cartBody');
-  const totalEl = root.querySelector('#total');
+  const $ = id => root.querySelector('#' + id);
+  const scan = $('scan'), grid = $('grid'), panel = $('cartPanel');
 
   const cartTotal = () => cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const cartCount = () => cart.reduce((s, i) => s + i.qty, 0);
+  const stockOf = id => store.products.find(p => p.id === id)?.stock ?? 0;
 
-  function renderGrid(filter = '') {
-    const f = filter.trim().toLowerCase();
-    const list = products.filter(p =>
-      !f || p.name.toLowerCase().includes(f) || (p.barcode || '').toLowerCase().includes(f));
-    grid.innerHTML = list.length ? list.map(p => `
-      <div class="prod-card" data-id="${p.id}">
-        <div class="name">${esc(p.name)}</div>
-        <div class="price">${fmtMoney(p.price)} ฿</div>
-        <div class="stk">คงเหลือ ${fmtInt(p.stock)}</div>
-      </div>`).join('')
-      : '<div class="muted">ไม่พบสินค้า — เพิ่มได้ที่เมนู "รายละเอียดสินค้า"</div>';
-    grid.querySelectorAll('.prod-card').forEach(el =>
-      el.addEventListener('click', () => addToCart(products.find(p => p.id === el.dataset.id))));
+  /* ---------- สินค้า ---------- */
+  function renderChips() {
+    const cats = [...new Set(store.products.map(p => p.category).filter(Boolean))].sort();
+    if (category && !cats.includes(category)) category = '';
+    $('chips').hidden = !cats.length;
+    $('chips').innerHTML = ['', ...cats].map(c =>
+      `<button data-c="${esc(c)}" class="${c === category ? 'active' : ''}">${c ? esc(c) : 'ทั้งหมด'}</button>`).join('');
+    $('chips').querySelectorAll('button').forEach(b => b.onclick = () => { category = b.dataset.c; renderChips(); renderGrid(); });
   }
 
-  function addToCart(p) {
+  function renderGrid() {
+    const f = scan.value.trim().toLowerCase();
+    const list = store.products
+      .filter(p => !category || p.category === category)
+      .filter(p => !f || p.name.toLowerCase().includes(f) || (p.barcode || '').toLowerCase().includes(f))
+      .sort((a, b) => a.name.localeCompare(b.name, 'th'));
+    grid.innerHTML = list.length ? list.map(p => {
+      const inCart = cart.find(i => i.productId === p.id)?.qty;
+      return `<div class="prod-card ${p.stock <= 0 ? 'out' : ''}" data-id="${p.id}">
+        ${inCart ? `<span class="qty-badge">${inCart}</span>` : ''}
+        <div class="pic">${p.image ? `<img src="${esc(p.image)}" loading="lazy" alt="">` : '📦'}</div>
+        <div class="name">${esc(p.name)}</div>
+        <div class="price">${fmtMoney(p.price)} ฿</div>
+        <div class="stk">${p.stock > 0 ? 'เหลือ ' + fmtInt(p.stock) : 'หมด'}</div>
+      </div>`;
+    }).join('')
+      : `<div class="empty" style="grid-column:1/-1">${store.products.length
+          ? 'ไม่พบสินค้า'
+          : 'ยังไม่มีสินค้า<br><br><button class="primary" id="addFirst">📷 สแกนเพิ่มสินค้าแรก</button>'}</div>`;
+    grid.querySelectorAll('.prod-card').forEach(el =>
+      el.addEventListener('click', () => addToCart(store.products.find(p => p.id === el.dataset.id))));
+    const af = grid.querySelector('#addFirst');
+    if (af) af.onclick = () => scanAndAdd();
+  }
+
+  /* ---------- ตะกร้า ---------- */
+  function addToCart(p, qty = 1) {
     if (!p) return;
-    if ((p.stock || 0) <= 0) return toast(`"${p.name}" สินค้าหมดสต๊อก`, 'err');
     const item = cart.find(i => i.productId === p.id);
-    if (item) {
-      if (item.qty + 1 > p.stock) return toast('เกินจำนวนคงเหลือในสต๊อก', 'err');
-      item.qty++;
-    } else {
-      cart.push({ productId: p.id, name: p.name, price: p.price, qty: 1 });
-    }
-    renderCart();
+    const want = (item?.qty || 0) + qty;
+    if (p.stock <= 0) return toast(`"${p.name}" สินค้าหมด`, 'err');
+    if (want > p.stock) return toast(`"${p.name}" เหลือแค่ ${p.stock}`, 'err');
+    if (item) item.qty = want;
+    else cart.push({ productId: p.id, name: p.name, price: p.price, qty });
+    renderCart(); renderGrid();
   }
 
   function renderCart() {
-    cartBody.innerHTML = cart.map((i, idx) => `
-      <tr>
-        <td>${esc(i.name)}</td>
-        <td class="num">${fmtMoney(i.price)}</td>
-        <td class="num"><input type="number" min="1" value="${i.qty}" data-idx="${idx}" class="qty" style="width:64px"></td>
-        <td class="num"><input type="number" value="0" disabled title="ปิดใช้งานตามสเปค" style="width:64px"></td>
-        <td class="num">${fmtMoney(i.price * i.qty)}</td>
-        <td><button class="ghost rm" data-idx="${idx}">✕</button></td>
-      </tr>`).join('');
-    totalEl.textContent = fmtMoney(cartTotal()) + ' ฿';
-    cartBody.querySelectorAll('.qty').forEach(inp => inp.addEventListener('change', () => {
-      const idx = +inp.dataset.idx;
-      const p = products.find(x => x.id === cart[idx].productId);
-      let q = Math.max(1, Math.floor(+inp.value || 1));
-      if (p && q > p.stock) { q = p.stock; toast('เกินจำนวนคงเหลือในสต๊อก', 'err'); }
-      cart[idx].qty = q;
-      renderCart();
-    }));
-    cartBody.querySelectorAll('.rm').forEach(btn => btn.addEventListener('click', () => {
-      cart.splice(+btn.dataset.idx, 1); renderCart();
-    }));
+    $('cartItems').innerHTML = cart.length ? cart.map((i, idx) => `
+      <div class="cart-line">
+        <div class="main"><div class="name">${esc(i.name)}</div><div class="unit">${fmtMoney(i.price)} ฿</div></div>
+        <div class="stepper">
+          <button data-d="-1" data-i="${idx}">−</button>
+          <input class="qty" type="number" inputmode="numeric" min="1" value="${i.qty}" data-i="${idx}">
+          <button data-d="1" data-i="${idx}">+</button>
+        </div>
+        <div class="sum">${fmtMoney(i.price * i.qty)}</div>
+      </div>`).join('')
+      : '<div class="empty">ตะกร้าว่าง — แตะสินค้าหรือสแกนเพื่อเพิ่ม</div>';
+    $('total').textContent = fmtMoney(cartTotal()) + ' ฿';
+    $('btnPay').disabled = !cart.length;
+
+    const bar = $('cartBar');
+    bar.classList.toggle('empty', !cart.length);
+    bar.innerHTML = `<span>🛒 ${fmtInt(cartCount())} ชิ้น</span><span>${fmtMoney(cartTotal())} ฿ ▲</span>`;
+    root.classList.toggle('has-cart', cart.length > 0);
+    if (!cart.length) closeSheet();
+
+    $('cartItems').querySelectorAll('[data-d]').forEach(b => b.onclick = () => setQty(+b.dataset.i, cart[+b.dataset.i].qty + +b.dataset.d));
+    $('cartItems').querySelectorAll('.qty').forEach(inp => inp.onchange = () => setQty(+inp.dataset.i, Math.floor(+inp.value || 0)));
   }
 
-  // ค้นหาสินค้าจากข้อความ/บาร์โค้ด แล้วเพิ่มลงตะกร้า
+  function setQty(idx, q) {
+    const it = cart[idx];
+    if (!it) return;
+    if (q <= 0) cart.splice(idx, 1);
+    else {
+      const max = stockOf(it.productId);
+      if (q > max) { q = max; toast(`"${it.name}" เหลือแค่ ${max}`, 'err'); }
+      it.qty = q;
+    }
+    renderCart(); renderGrid();
+  }
+
+  // มือถือ: ตะกร้าเป็น bottom sheet
+  function openSheet() { panel.classList.add('open'); $('sheetBack').hidden = false; }
+  function closeSheet() { panel.classList.remove('open'); $('sheetBack').hidden = true; }
+  $('cartBar').onclick = openSheet;
+  $('closeSheet').onclick = closeSheet;
+  $('sheetBack').onclick = closeSheet;
+
+  $('btnClear').onclick = () => {
+    if (cart.length && !confirm('ล้างตะกร้าทั้งหมด?')) return;
+    cart = []; renderCart(); renderGrid();
+  };
+
+  /* ---------- สแกน / ค้นหา ---------- */
+  async function offerAddNew(code) {
+    const m = modal(`<h3>ไม่พบสินค้านี้ในระบบ</h3>
+      <div class="scanned-code"><span>${esc(code)}</span></div>
+      <p class="muted">ต้องการเพิ่มเป็นสินค้าใหม่แล้วใส่ตะกร้าเลยไหม?</p>
+      <div class="actions"><button id="no">ไม่ใช่</button><button class="primary" id="yes">➕ เพิ่มสินค้าใหม่</button></div>`);
+    m.el.querySelector('#no').onclick = m.close;
+    m.el.querySelector('#yes').onclick = async () => {
+      m.close();
+      const p = await openProductForm(null, { barcode: code });
+      if (p) { renderChips(); addToCart(p); }
+    };
+  }
+
   function submitCode(raw) {
-    const q = String(raw || '').trim().toLowerCase();
+    const q = String(raw || '').trim();
     if (!q) return;
-    const p = products.find(x => (x.barcode || '').toLowerCase() === q)
-      || products.find(x => x.name.toLowerCase() === q)
-      || products.filter(x => x.name.toLowerCase().includes(q))[0];
-    if (p) { addToCart(p); scan.value = ''; renderGrid(); }
-    else toast('ไม่พบสินค้า: ' + raw, 'err');
+    const lq = q.toLowerCase();
+    const p = findByBarcode(q)
+      || store.products.find(x => x.name.toLowerCase() === lq)
+      || (store.products.filter(x => x.name.toLowerCase().includes(lq)).length === 1
+          ? store.products.find(x => x.name.toLowerCase().includes(lq)) : null);
+    if (p) { addToCart(p); scan.value = ''; renderGrid(); return; }
+    // ดูเหมือนบาร์โค้ด (ไม่มีช่องว่าง ยาว ≥ 4) → เสนอให้เพิ่มสินค้าใหม่
+    if (/^\S{4,}$/.test(q) && !store.products.some(x => x.name.toLowerCase().includes(lq))) {
+      scan.value = ''; renderGrid(); offerAddNew(q);
+    } else toast('เลือกสินค้าจากรายการด้านล่าง', 'info');
   }
 
-  scan.addEventListener('input', () => renderGrid(scan.value));
+  async function scanAndAdd() {
+    const code = await scanBarcode();
+    if (!code) return;
+    const p = findByBarcode(code);
+    if (p) { addToCart(p); toast(`+1 ${p.name}`); }
+    else offerAddNew(code);
+  }
+
+  scan.addEventListener('input', renderGrid);
   scan.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
     e.preventDefault();
     submitCode(scan.value);
   });
+  $('btnCam').onclick = scanAndAdd;
 
-  // 📷 เปิดกล้องสแกนบาร์โค้ด → เลขขึ้นในช่อง แล้วเพิ่มลงตะกร้าอัตโนมัติ
-  root.querySelector('#btnCam').onclick = async () => {
-    const code = await scanBarcode();
-    if (!code) return;
-    scan.value = code;
-    renderGrid(code);
-    if (products.some(x => (x.barcode || '') === code)) {
-      submitCode(code);
-      toast('สแกนสำเร็จ: ' + code);
-    } else {
-      toast(`สแกนได้ ${code} — ยังไม่มีสินค้านี้ในระบบ (เพิ่มที่เมนู "รายละเอียดสินค้า")`, 'err');
-    }
-  };
-
-  root.querySelector('#btnClear').onclick = () => { cart = []; renderCart(); };
-
-  // ---------------- ชำระเงิน ----------------
-  root.querySelector('#btnPay').onclick = async () => {
+  /* ---------- ชำระเงิน ---------- */
+  $('btnPay').onclick = () => {
     if (!cart.length) return toast('ตะกร้าว่าง', 'err');
     for (const i of cart) {
-      const p = await dbGet('products', i.productId);
-      if (!p || p.stock < i.qty) return toast(`สต๊อก "${i.name}" ไม่พอ (เหลือ ${p ? p.stock : 0})`, 'err');
+      if (stockOf(i.productId) < i.qty) return toast(`สต๊อก "${i.name}" ไม่พอ (เหลือ ${stockOf(i.productId)})`, 'err');
     }
-    openPayModal(cartTotal());
+    closeSheet();
+    openPayModal(Math.round(cartTotal() * 100) / 100);
   };
 
-  async function openPayModal(total) {
-    const qrSetting = (await dbGet('settings', 'qrImage')) || {};
-    let qrImage = qrSetting.image || null;
-
+  function openPayModal(total) {
     const m = modal(`
       <h3 style="margin-top:0">ชำระเงิน</h3>
       <div class="pay-amount">ยอดที่ต้องชำระ <b>${fmtMoney(total)}</b> ฿</div>
@@ -152,108 +202,70 @@ export default async function render(root, { user }) {
       </div>
       <div id="payPanel"></div>
       <div class="actions"><button type="button" id="payCancel">ยกเลิก</button></div>`);
-
     m.el.querySelector('#payCancel').onclick = m.close;
-    const panel = m.el.querySelector('#payPanel');
+    const panelEl = m.el.querySelector('#payPanel');
 
     function showCash() {
-      panel.innerHTML = `
+      panelEl.innerHTML = `
         <label>รับเงินมา (บาท)</label>
         <input id="recv" type="number" min="0" step="0.01" inputmode="decimal"
-               placeholder="เช่น 100" style="width:100%;font-size:20px;text-align:right" autofocus>
+               placeholder="0.00" style="font-size:24px;text-align:right">
         <div class="quick-cash" id="quick"></div>
         <div class="change-box" id="changeBox">เงินทอน <b>0.00</b> ฿</div>
-        <div style="text-align:right;margin-top:10px">
-          <button class="primary" id="confirmCash" style="font-size:16px;padding:10px 24px" disabled>ยืนยันการชำระ</button>
-        </div>`;
+        <button class="primary block" id="confirmCash" style="font-size:18px;min-height:52px;margin-top:12px" disabled>✅ ยืนยันการชำระ</button>`;
+      const recv = panelEl.querySelector('#recv');
+      const box = panelEl.querySelector('#changeBox');
+      const btn = panelEl.querySelector('#confirmCash');
 
-      const recv = panel.querySelector('#recv');
-      const box = panel.querySelector('#changeBox');
-      const btn = panel.querySelector('#confirmCash');
-
-      // ปุ่มลัด: ยอดพอดี + ปัดขึ้นแบงก์ที่ใช้บ่อย
-      const notes = [20, 50, 100, 500, 1000].filter(n => n >= total);
-      const quick = [{ v: total, label: 'พอดี ' + fmtInt(Math.ceil(total)) }]
-        .concat(notes.slice(0, 4).map(n => ({ v: n, label: fmtInt(n) })));
-      panel.querySelector('#quick').innerHTML = quick
-        .map(q => `<button type="button" data-v="${q.v}">${q.label}</button>`).join('');
-      panel.querySelectorAll('#quick button').forEach(b => b.onclick = () => {
-        recv.value = (+b.dataset.v).toFixed(2);
-        update();
-      });
+      const notes = [20, 50, 100, 500, 1000].filter(n => n > total);
+      const quick = [{ v: total, label: 'พอดี' }].concat(notes.slice(0, 5).map(n => ({ v: n, label: fmtInt(n) })));
+      panelEl.querySelector('#quick').innerHTML = quick.map(q => `<button type="button" data-v="${q.v}">${q.label}</button>`).join('');
+      panelEl.querySelectorAll('#quick button').forEach(b => b.onclick = () => { recv.value = (+b.dataset.v).toFixed(2); update(); });
 
       function update() {
         const got = parseFloat(recv.value);
         if (!isFinite(got) || got <= 0) {
-          box.className = 'change-box';
-          box.innerHTML = 'เงินทอน <b>0.00</b> ฿';
-          btn.disabled = true;
-          return;
+          box.className = 'change-box'; box.innerHTML = 'เงินทอน <b>0.00</b> ฿'; btn.disabled = true; return;
         }
         const change = got - total;
         if (change < -0.005) {
-          box.className = 'change-box short';
-          box.innerHTML = `❌ เงินยังขาดอีก <b>${fmtMoney(-change)}</b> ฿`;
-          btn.disabled = true;
+          box.className = 'change-box short'; box.innerHTML = `❌ ยังขาดอีก <b>${fmtMoney(-change)}</b> ฿`; btn.disabled = true;
         } else {
-          box.className = 'change-box ok';
-          box.innerHTML = `เงินทอน <b>${fmtMoney(change)}</b> ฿`;
-          btn.disabled = false;
+          box.className = 'change-box ok'; box.innerHTML = `เงินทอน <b>${fmtMoney(change)}</b> ฿`; btn.disabled = false;
         }
       }
       recv.addEventListener('input', update);
-      recv.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !btn.disabled) { e.preventDefault(); btn.click(); }
-      });
-      btn.onclick = () => {
-        const got = parseFloat(recv.value);
-        finishSale(m, total, 'cash', got, got - total);
-      };
-      recv.focus();
+      recv.addEventListener('keydown', e => { if (e.key === 'Enter' && !btn.disabled) { e.preventDefault(); btn.click(); } });
+      btn.onclick = () => finishSale(m, total, 'cash', parseFloat(recv.value));
+      if (matchMedia('(pointer:fine)').matches) recv.focus(); // มือถือไม่ต้องเด้งคีย์บอร์ด ให้กดปุ่มลัดได้
     }
 
     function showQR() {
-      panel.innerHTML = `
+      const qrImage = store.settings.qrImage || '';
+      panelEl.innerHTML = `
         <div class="qr-box">
-          ${qrImage
-            ? `<img src="${qrImage}" alt="QR พร้อมเพย์">`
-            : `<div class="qr-empty">ยังไม่ได้ตั้งรูป QR<br>
-                 <span class="muted">${canEditQR ? 'กดปุ่ม "เปลี่ยนรูป QR" ด้านล่างเพื่ออัปโหลด' : 'แจ้งผู้ดูแลระบบให้อัปโหลดรูป QR'}</span></div>`}
+          ${qrImage ? `<img src="${esc(qrImage)}" alt="QR พร้อมเพย์">`
+            : `<div class="qr-empty">ยังไม่ได้ตั้งรูป QR พร้อมเพย์<br><span class="muted">กด "ตั้งรูป QR" ด้านล่างเพื่ออัปโหลด</span></div>`}
         </div>
         <div class="pay-amount" style="margin-top:8px">ให้ลูกค้าสแกนจ่าย <b>${fmtMoney(total)}</b> ฿</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:8px;flex-wrap:wrap">
-          <span>
-            ${canEditQR ? `<button type="button" id="btnQrEdit">🖼️ เปลี่ยนรูป QR</button>
-              ${qrImage ? '<button type="button" class="danger" id="btnQrDel">ลบรูป</button>' : ''}` : ''}
-          </span>
-          <button class="primary" id="confirmQr" style="font-size:16px;padding:10px 24px">✅ ยืนยันว่าชำระเงินแล้ว</button>
+        <button class="primary block" id="confirmQr" style="font-size:18px;min-height:52px">✅ ได้รับเงินแล้ว</button>
+        <div style="text-align:center;margin-top:8px">
+          <button type="button" class="ghost sm" id="btnQrEdit">🖼️ ${qrImage ? 'เปลี่ยน' : 'ตั้ง'}รูป QR</button>
         </div>
         <input id="qrFile" type="file" accept="image/*" hidden>`;
-
-      panel.querySelector('#confirmQr').onclick = () => finishSale(m, total, 'qr', null, 0);
-
-      if (canEditQR) {
-        const file = panel.querySelector('#qrFile');
-        panel.querySelector('#btnQrEdit').onclick = () => file.click();
-        file.addEventListener('change', async e => {
-          const f = e.target.files[0];
-          if (!f) return;
-          try {
-            qrImage = await compressImage(f, 900, 0.85);
-            await dbPut('settings', { key: 'qrImage', image: qrImage, updatedAt: Date.now(), updatedBy: user.username });
-            toast('บันทึกรูป QR แล้ว — ใช้ได้ทุกเครื่อง');
-            showQR();
-          } catch (err) { toast(err.message, 'err'); }
-        });
-        const del = panel.querySelector('#btnQrDel');
-        if (del) del.onclick = async () => {
-          if (!confirm('ลบรูป QR ที่ตั้งไว้?')) return;
-          qrImage = null;
-          await dbPut('settings', { key: 'qrImage', image: null, updatedAt: Date.now(), updatedBy: user.username });
-          toast('ลบรูป QR แล้ว');
-          showQR();
-        };
-      }
+      panelEl.querySelector('#confirmQr').onclick = () => finishSale(m, total, 'qr', null);
+      const file = panelEl.querySelector('#qrFile');
+      panelEl.querySelector('#btnQrEdit').onclick = () => file.click();
+      file.addEventListener('change', async e => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const ok = await busy(async () => {
+          const url = await uploadImage(await compressImage(f, 900, 0.85), 'qr-promptpay');
+          await call('setSetting', { key: 'qrImage', value: url });
+          return true;
+        }, 'กำลังอัปโหลดรูป QR…');
+        if (ok) { toast('บันทึกรูป QR แล้ว — ใช้ได้ทุกเครื่อง'); showQR(); }
+      });
     }
 
     m.el.querySelectorAll('.pay-tabs button').forEach(b => b.onclick = () => {
@@ -264,46 +276,30 @@ export default async function render(root, { user }) {
     showCash();
   }
 
-  // บันทึกการขาย + ตัดสต๊อก
-  async function finishSale(payModal, total, payMethod, received, change) {
-    for (const i of cart) {
-      const p = await dbGet('products', i.productId);
-      if (!p || p.stock < i.qty) return toast(`สต๊อก "${i.name}" ไม่พอ (เหลือ ${p ? p.stock : 0})`, 'err');
-    }
-    const billNo = await nextBillNo();
-    const ts = Date.now();
-    for (const i of cart) {
-      const p = await dbGet('products', i.productId);
-      p.stock -= i.qty;
-      await dbPut('products', p);
-      await dbPut('stock_moves', {
-        id: uuid(), productId: p.id, ts, type: 'sale', qty: -i.qty,
-        note: `ขายบิล ${billNo}`, userId: user.id,
-      });
-    }
-    await dbPut('sales', {
-      id: uuid(), billNo, ts, total,
-      items: cart.map(i => ({ ...i })),
-      payMethod, received: received ?? null, change: change ?? 0,
-      userId: user.id, username: user.username,
-    });
-
+  async function finishSale(payModal, total, payMethod, received) {
+    const r = await busy(() => call('checkout', { items: cart, payMethod, received }), 'กำลังบันทึกการขาย…');
+    if (!r) return;
+    const s = r.sale;
     payModal.close();
     const m = modal(`<h3 style="margin-top:0">ชำระเงินสำเร็จ ✅</h3>
-      <p>เลขที่บิล: <b>${billNo}</b> · วิธีชำระ: <b>${payMethod === 'cash' ? '💵 เงินสด' : '📱 QR พร้อมเพย์'}</b></p>
-      <p class="big">${fmtMoney(total)} ฿</p>
-      ${payMethod === 'cash' ? `<div class="result-box">
-        <div class="line">รับเงินมา <b>${fmtMoney(received)}</b> ฿</div>
-        <div class="line" style="font-size:22px">💰 เงินทอน <b>${fmtMoney(change)}</b> ฿</div></div>` : ''}
-      <div class="actions"><button class="primary" id="ok">ตกลง</button></div>`);
-    m.el.querySelector('#ok').onclick = m.close;
-
+      <p>บิล <b>${esc(s.billNo)}</b> · ${payMethod === 'cash' ? '💵 เงินสด' : '📱 QR พร้อมเพย์'}</p>
+      <p class="big" style="text-align:center;font-size:32px">${fmtMoney(s.total)} ฿</p>
+      ${payMethod === 'cash' ? `<div class="result-box" style="text-align:center">
+        <div class="line">รับเงินมา <b>${fmtMoney(s.received)}</b> ฿</div>
+        <div class="line" style="font-size:24px">💰 เงินทอน <b>${fmtMoney(s.change)}</b> ฿</div></div>` : ''}
+      <div class="actions"><button class="primary block" id="ok" style="min-height:52px;font-size:17px">ขายต่อ</button></div>`);
+    m.el.querySelector('#ok').onclick = () => { m.close(); if (matchMedia('(pointer:fine)').matches) scan.focus(); };
     cart = [];
-    products = await dbAll('products');
-    renderCart(); renderGrid(scan.value);
-    scan.focus();
+    renderCart(); renderGrid();
   }
 
-  renderGrid();
-  renderCart();
+  // ข้อมูลเปลี่ยน (ซิงก์จาก Sheet / อีกเครื่องขาย) → อัปเดตหน้าจอ และตัดของในตะกร้าที่ถูกลบไปแล้ว
+  const off = onChange(() => {
+    cart = cart.filter(i => store.products.some(p => p.id === i.productId));
+    renderChips(); renderGrid(); renderCart();
+  });
+
+  renderChips(); renderGrid(); renderCart();
+  if (matchMedia('(pointer:fine)').matches) scan.focus(); // คอม: พร้อมรับเครื่องยิงบาร์โค้ดทันที
+  return () => { off(); };
 }

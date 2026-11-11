@@ -1,6 +1,6 @@
 // barcode.js — สแกนบาร์โค้ดด้วยกล้องมือถือ
 // ลำดับการทำงาน: BarcodeDetector (Chrome Android) → ZXing (สำรอง iOS/เดสก์ท็อป) → ถ่ายภาพ → กรอกเลขเอง
-import { h, esc } from './ui.js';
+import { h, esc, beep } from './ui.js';
 
 const ZXING_CDN = 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/+esm';
 const WANT_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'codabar', 'qr_code'];
@@ -58,11 +58,11 @@ async function decodeFile(file) {
  * เปิดกล้องสแกนบาร์โค้ด
  * @returns {Promise<string|null>} เลขบาร์โค้ด หรือ null ถ้าผู้ใช้ปิดหน้าต่าง
  */
-export function scanBarcode() {
+export function scanBarcode(title = '📷 สแกนบาร์โค้ด / QR') {
   return new Promise(resolve => {
     const back = h(`<div class="modal-back">
       <div class="modal scan-modal">
-        <h3 style="margin-top:0">📷 สแกนบาร์โค้ด</h3>
+        <h3 style="margin-top:0">${esc(title)}</h3>
         <div class="scan-view">
           <video id="scanVideo" playsinline muted></video>
           <div class="scan-frame"></div>
@@ -70,7 +70,7 @@ export function scanBarcode() {
         <div class="scan-status" id="scanStatus">กำลังเปิดกล้อง…</div>
         <div style="margin-top:10px">
           <label>หรือกรอกเลขเอง แล้วกด Enter</label>
-          <input id="scanManual" inputmode="numeric" autocomplete="off"
+          <input id="scanManual" autocomplete="off" enterkeyhint="done"
                  placeholder="เช่น 8850001234567" style="width:100%">
         </div>
         <div class="actions" style="justify-content:space-between">
@@ -102,6 +102,7 @@ export function scanBarcode() {
       cleanup();
       back.remove();
       document.removeEventListener('keydown', onEsc);
+      if (code) beep();
       resolve(code ? String(code).trim() : null);
     }
     function onEsc(e) { if (e.key === 'Escape') done(null); }

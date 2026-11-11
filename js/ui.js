@@ -38,6 +38,39 @@ export function modal(innerHTML) {
   return { el: back.querySelector('.modal'), close };
 }
 
+/** แสดง overlay "กำลังบันทึก…" ระหว่างรอ Apps Script แล้วคืนผลของ fn
+ *  ถ้า error จะแสดง toast และคืน undefined */
+export async function busy(fn, text = 'กำลังบันทึก…') {
+  const el = h(`<div class="loading-back"><div class="loading-box"><div class="spinner"></div><div>${esc(text)}</div></div></div>`);
+  document.body.appendChild(el);
+  try {
+    return await fn();
+  } catch (err) {
+    toast(err.message, 'err');
+    return undefined;
+  } finally {
+    el.remove();
+  }
+}
+
+/** เสียงบี๊บ + สั่น เมื่อสแกนสำเร็จ */
+export function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 1400; g.gain.value = 0.08;
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + 0.09);
+    o.onended = () => ctx.close();
+  } catch { /* ไม่มีเสียงก็ได้ */ }
+  navigator.vibrate?.(60);
+}
+
+export const todayISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 // บีบอัดรูปอัตโนมัติ → dataURL (jpeg)
 export function compressImage(file, maxW = 1000, quality = 0.72) {
   return new Promise((resolve, reject) => {
