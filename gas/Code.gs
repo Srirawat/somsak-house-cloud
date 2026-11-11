@@ -14,6 +14,9 @@
  */
 
 const TZ = 'Asia/Bangkok';
+// ID ของ Google Sheet (ส่วนกลางของ URL .../spreadsheets/d/<ID>/edit)
+// เว้นว่างได้ถ้าสร้างสคริปต์จากเมนู Extensions → Apps Script ของ Sheet นั้นโดยตรง
+const SHEET_ID = '';
 const IMAGE_FOLDER_NAME = 'Somsak POS Images';
 const MAX_SALES_RETURNED = 1000;
 
@@ -74,7 +77,7 @@ function respond_(fn) {
 /** รันครั้งแรกจาก editor: สร้างชีตทั้งหมด + โฟลเดอร์รูป */
 function setup() {
   Object.keys(SCHEMA).forEach(sheet_);
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = ss_();
   ['Sheet1', 'แผ่นงาน1', 'ชีต1'].forEach(function (n) {
     const sh = ss.getSheetByName(n);
     if (sh && sh.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(sh);
@@ -360,8 +363,12 @@ function round2_(n) { return Math.round(n * 100) / 100; }
 
 /* --------------------------- sheet row <-> object -------------------------- */
 
+function ss_() {
+  return SHEET_ID ? SpreadsheetApp.openById(SHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+}
+
 function sheet_(name) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = ss_();
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
